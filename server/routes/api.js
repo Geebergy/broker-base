@@ -151,7 +151,7 @@ router.post('/addParticipant', async (req, res) => {
       // update user balance before adding them
       await User.findOneAndUpdate(
         { userId: userId },
-        { $inc: { referralsBalance: -fee, slots: 1 } }, // Deduct the fee from the balance
+        { $inc: { dailyDropBalance: -fee} }, // Deduct the fee from the balance
         { new: true } // To return the updated user document
       );
   
@@ -784,6 +784,85 @@ router.put('/updateUserWithdrawal/:transactionId', async (request, response) => 
   } catch (error) {
     console.error('Error updating user balance and deleting document:', error);
     response.status(500).send('Error updating user balance and deleting document');
+  }
+});
+
+// handling crypto account activation
+router.put('/updatePaymentStatusAndDelete/:transactionId', async (request, response) => {
+  try {
+    const { transactionId } = request.params;
+    const { newStatus, userId } = request.body;
+
+    // Update payment status in the database
+    await Transaction.findOneAndUpdate(
+      { paymentID: transactionId},
+      { status: newStatus },
+      { new: true }
+    );
+
+    if(newStatus === 'success'){
+      const currentUser = await User.findOne({ userId });
+      const currentUserReferrerId = currentUser.referredBy;
+      const currentUserReferrer = await User.findOne({ userId: currentUserReferrerId });
+      
+  
+      const currentUserIsActive = currentUser.isUserActive;
+      const currentUserReferralRedeemed = currentUser.referralRedeemed;
+      const currentUserReferrerTotalReferrals = currentUserReferrer ? currentUserReferrer.totalReferrals : null;
+  
+  
+      // Check if the referral commission has been redeemed
+      if (!currentUserReferralRedeemed && currentUserReferrerId !== 'none') {
+        // Calculate commission based on referral tier
+        let commissionRate = 0.17; // Default commission rate for tier 0
+        if (currentUserReferrerTotalReferrals !== null) {
+          if (currentUserReferrerTotalReferrals >= 9) commissionRate = 0.3;
+          else if (currentUserReferrerTotalReferrals >= 6) commissionRate = 0.25;
+          else if (currentUserReferrerTotalReferrals >= 3) commissionRate = 0.20;
+        }
+        // note that this commission is coming from a crypto account
+        const commission = commissionRate * (currentUserReferrer.role === 'crypto' ? 20 : 14000);
+        const revenueAdd = currentUserReferrer.role === 'crypto' ? 2 : 1333;
+  
+        // Update referrer's commission
+        await User.updateOne(
+          { userId: currentUserReferrerId },
+          {
+            $inc: { referralsCount: 1, totalReferrals: 1, referralsBalance: commission, referredUsers: -1, weeklyEarnings: commission, reserveAccountLimit: revenueAdd, dailyDropBalance: 15 }
+          }
+        );
+      }
+  
+      // Update current user's account balance
+      
+      if (!currentUserIsActive) {
+        // Update user's balance after account activation
+        await User.updateOne(
+          { userId },
+          {
+            $set: { isUserActive: true, referralRedeemed: true, hasPaid: true },
+            $inc: { deposit: 20, dailyDropBalance: 10 }
+          }
+        );
+      } else {
+        // Update user's balance after account activation (without dailyDropBalance increment)
+        await User.updateOne(
+          { userId },
+          {
+            $set: { isUserActive: true, referralRedeemed: true, hasPaid: true },
+            $inc: { deposit: 20 }
+          }
+        );
+      }
+  
+    }
+    // Delete the document
+    await PaymentCallback.deleteOne({ payment_id : transactionId });
+
+    response.sendStatus(200); // Respond with success status
+  } catch (error) {
+    console.error('Error updating payment status and deleting document:', error);
+    response.status(500).send('Error updating payment status and deleting document');
   }
 });
 
